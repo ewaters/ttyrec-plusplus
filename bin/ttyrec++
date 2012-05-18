@@ -1,5 +1,7 @@
 #!/usr/bin/env perl
 
+# Much of this code comes from http://poe.perl.org/?POE_Cookbook/Child_Processes
+
 use warnings;
 use strict;
 use Time::HiRes qw(gettimeofday tv_interval);
