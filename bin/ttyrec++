@@ -16,14 +16,16 @@ use utf8;
 ## Configuration
 
 my %opt = (
-	out_file    => "ttyrec.$$.log",
+	out_file    => "logs/ttyrec.$$.json",
 	window_size => undef,
 	command     => $ENV{SHELL},
+	debug       => 0,
 );
 
 GetOptions(
 	'out=s'     => \$opt{out_file},
 	'command=s' => \$opt{command},
+	'debug'     => \$opt{debug},
 );
 
 if (@ARGV) {
@@ -36,11 +38,35 @@ if (! $opt{window_size}) {
 
 ## Setup
 
-my $json_xs = JSON::XS->new->ascii;
-open my $log, '>', $opt{out_file} or die "Failed to open $opt{out_file} for writing: $!";
-my $start_time = [gettimeofday];
+my %ascii_table_map = (
+	8  => 'backspace',
+	9  => 'horizontal-tab',
+	10 => 'line-feed',
+	11 => 'vertical-tab',
+	13 => 'carriage-return',
+	32 => 'space',
+	127 => 'delete',
+);
 
-print "Creating log $opt{out_file}\n";
+my %control_code_map = (
+	"\e[B" => 'down-arrow',
+	"\eOB" => 'down-arrow',
+	"\e[C" => 'right-arrow',
+	"\eOC" => 'right-arrow',
+	"\e[A" => 'up-arrow',
+	"\eOA" => 'up-arrow',
+	"\e[D" => 'left-arrow',
+	"\eOD" => 'left-arrow',
+);
+
+my $json_xs = JSON::XS->new->ascii->pretty;
+my $start_time;
+my $last_time;
+my @frames;
+my $debug_log;
+if ($opt{debug}) {
+	open $debug_log, '>', 'debug.log' or die "$!";
+}
 
 ### Start a session to encapsulate the previous features.
 
@@ -51,6 +77,7 @@ POE::Session->create(
 		got_terminal_stdin => \&handle_terminal_stdin,
 		got_child_stdout   => \&handle_child_stdout,
 		got_sigchld        => \&handle_sigchld,
+		got_sigwinch       => \&handle_sigwinch,
 	},
 );
 
@@ -59,23 +86,81 @@ $poe_kernel->run();
 exit 0;
 
 sub record_input {
-	do_log('stdin', @_);
+	my $input = shift;
+
+	# Map $input string to description of what the key is
+	my $byte_length;
+	{
+		use bytes;
+		$byte_length = length $input;
+		no bytes;
+	}
+	if ($control_code_map{$input}) {
+		$input = [ $control_code_map{$input} ];
+	}
+	elsif ($byte_length == 1) {
+		my $ord = ord($input);
+		if (my $name = $ascii_table_map{$ord}) {
+			$input = [ $name ];
+		}
+		elsif ($ord <= 31) {
+			$input = { ctrl => chr($ord + 64) };
+		}
+	}
+
+	push_frames('in', $input);
 }
 
 sub record_output {
-	do_log('stdout', @_);
+	push_frames('out', @_);
 }
 
-sub do_log {
+sub push_frames {
 	my ($from, $text) = @_;
 
-	my $seconds_since_start = tv_interval($start_time, [gettimeofday]);
-	my $ms_since_start = sprintf('%d', $seconds_since_start * 1000) * 1;
+	if ($from eq 'out') {
+		$text = decode('utf8', $text);
+		# This feels very hacky.  `typescript` captures '\r\n' as a line ending where as
+		# we only receive '\n'.  Not sure what's going on.
+		$text =~ s{(?<!\r)\n}{\r\n}g;
+		
+		print $debug_log $text if $opt{debug};
+	}
+	else {
+		# input may not be text; could be a data structure
+	}
 
-	printf $log "recorded_%s(%s);\n", (
-		($from eq 'stdin' ? 'input' : 'output'),
-		$json_xs->encode([ $ms_since_start, decode('utf8', $text) ]),
+	my $ms_since_last = 0;
+	if ($last_time) {
+		my $seconds_since_last = tv_interval($last_time, [gettimeofday]);
+		$ms_since_last = sprintf('%d', $seconds_since_last * 1000) * 1;
+	}
+	$last_time = [gettimeofday];
+
+	# If no time elapsed since the last frame and the last frame in the stack is 'out',
+	# concatenate the contents of this text onto the previous frame
+	if (@frames && $ms_since_last == 0 && $frames[-1][0] eq $from && $from eq 'out') {
+		$frames[-1][2] .= $text;
+	}
+	else {
+		push @frames, [ $from, $ms_since_last, $text ];
+	}
+}
+
+sub record_file {
+	my %json = (
+		start_time  => $start_time,
+		end_time    => scalar gettimeofday,
+		term_rows   => $opt{window_size}[0],
+		term_cols   => $opt{window_size}[1],
+		command     => $opt{command},
+		frames      => \@frames,
 	);
+
+	print "Creating log $opt{out_file}\n";
+	open my $log, '>', $opt{out_file} or die "Failed to open $opt{out_file} for writing: $!";
+	print $log $json_xs->encode(\%json);
+	close $log;
 }
 
 ### Handle the _start event.  This sets things in motion.
@@ -85,6 +170,10 @@ sub handle_start {
 
 	# Set a signal handler.
 	$kernel->sig(CHLD => "got_sigchld");
+	$kernel->sig(WINCH => "got_sigwinch");
+
+	#$heap->{stty} = `stty -g`;
+	#chomp $heap->{stty};
 
 	# Save the original terminal settings so they can be restored later.
 	$heap->{stdin_tio} = POSIX::Termios->new();
@@ -97,21 +186,43 @@ sub handle_start {
 	# Put the terminal into raw input mode.  Otherwise discrete
 	# keystrokes will not be read immediately.
 
-	my $tio = POSIX::Termios->new();
-	$tio->getattr(0);
+	{
+		my $tio = POSIX::Termios->new();
+		$tio->getattr(0);
 
-	my $lflag = $tio->getlflag;
-	$lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL | ICANON | IEXTEN | ISIG);
-	$tio->setlflag($lflag);
+		my $lflag = $tio->getlflag;
+		$lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL | ICANON | IEXTEN | ISIG);
+		$tio->setlflag($lflag);
 
-	my $iflag = $tio->getiflag;
-	$iflag &= ~(BRKINT | INPCK | ISTRIP | IXON);
-	$tio->setiflag($iflag);
+		my $iflag = $tio->getiflag;
+		$iflag &= ~(BRKINT | INPCK | ISTRIP | IXON);
+		$tio->setiflag($iflag);
 
-	my $cflag = $tio->getcflag;
-	$cflag &= ~(CSIZE | PARENB);
-	$tio->setcflag($cflag);
-	$tio->setattr(0, TCSANOW);
+		my $cflag = $tio->getcflag;
+		$cflag &= ~(CSIZE | PARENB);
+		$tio->setcflag($cflag);
+		$tio->setattr(0, TCSANOW);
+	}
+
+	{
+		my $tio = POSIX::Termios->new();
+		$tio->getattr(1);
+
+		my $lflag = $tio->getlflag;
+		$lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL | ICANON | IEXTEN | ISIG);
+		$tio->setlflag($lflag);
+
+		$tio->setattr(1, TCSANOW);
+	}
+
+	if (0) {
+		my $tio = POSIX::Termios->new();
+		$tio->getattr(1);
+
+		my $lflag = $tio->getlflag;
+		$lflag &= ~ECHO;
+		$tio->setlflag($lflag);
+	}
 
 	# Start the terminal reader/writer.
 
@@ -131,6 +242,10 @@ sub handle_start {
 		StdoutEvent => "got_child_stdout",
 		StdioFilter => POE::Filter::Stream->new(),
 	);
+
+	#system "stty $$heap{stty}";
+
+	$start_time = scalar gettimeofday;
 }
 
 ### Handle the _stop event.  This restores the original terminal
@@ -141,6 +256,7 @@ sub handle_stop {
 	$heap->{stdin_tio}->setattr(0, TCSANOW);
 	$heap->{stdout_tio}->setattr(1, TCSANOW);
 	$heap->{stderr_tio}->setattr(2, TCSANOW);
+	record_file();
 }
 
 ### Handle terminal STDIN.  Send it to the background program's STDIN.
@@ -172,3 +288,7 @@ sub handle_sigchld {
 	return 0;
 }
 
+sub handle_sigwinch {
+	print "Window was resized! Not yet supported\n";
+	# TODO: Pass window size onto child
+}
