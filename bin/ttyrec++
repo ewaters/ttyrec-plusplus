@@ -11,12 +11,13 @@ use Data::Dumper;
 use POSIX;
 use POE qw(Wheel::ReadWrite Wheel::Run Filter::Stream);
 use Getopt::Long;
+use FindBin;
 use utf8;
 
 ## Configuration
 
 my %opt = (
-	out_file    => "logs/ttyrec.$$.json",
+	out_file    => "$FindBin::Bin/../logs/ttyrec.$$.json",
 	window_size => undef,
 	command     => $ENV{SHELL},
 	debug       => 0,
@@ -37,27 +38,6 @@ if (! $opt{window_size}) {
 }
 
 ## Setup
-
-my %ascii_table_map = (
-	8  => 'backspace',
-	9  => 'horizontal-tab',
-	10 => 'line-feed',
-	11 => 'vertical-tab',
-	13 => 'carriage-return',
-	32 => 'space',
-	127 => 'delete',
-);
-
-my %control_code_map = (
-	"\e[B" => 'down-arrow',
-	"\eOB" => 'down-arrow',
-	"\e[C" => 'right-arrow',
-	"\eOC" => 'right-arrow',
-	"\e[A" => 'up-arrow',
-	"\eOA" => 'up-arrow',
-	"\e[D" => 'left-arrow',
-	"\eOD" => 'left-arrow',
-);
 
 my $json_xs = JSON::XS->new->ascii->pretty;
 my $start_time;
@@ -86,29 +66,7 @@ $poe_kernel->run();
 exit 0;
 
 sub record_input {
-	my $input = shift;
-
-	# Map $input string to description of what the key is
-	my $byte_length;
-	{
-		use bytes;
-		$byte_length = length $input;
-		no bytes;
-	}
-	if ($control_code_map{$input}) {
-		$input = [ $control_code_map{$input} ];
-	}
-	elsif ($byte_length == 1) {
-		my $ord = ord($input);
-		if (my $name = $ascii_table_map{$ord}) {
-			$input = [ $name ];
-		}
-		elsif ($ord <= 31) {
-			$input = { ctrl => chr($ord + 64) };
-		}
-	}
-
-	push_frames('in', $input);
+	push_frames('in', @_);
 }
 
 sub record_output {
