@@ -9,7 +9,7 @@ use JSON::XS;
 use Encode qw(encode decode);
 use Data::Dumper;
 use POSIX;
-use POE qw(Wheel::ReadWrite Wheel::Run Filter::Stream);
+use POE qw(Wheel::ReadWrite Wheel::Run_ttyrec Filter::Stream);
 use Getopt::Long;
 use FindBin;
 use utf8;
@@ -130,9 +130,6 @@ sub handle_start {
 	$kernel->sig(CHLD => "got_sigchld");
 	$kernel->sig(WINCH => "got_sigwinch");
 
-	#$heap->{stty} = `stty -g`;
-	#chomp $heap->{stty};
-
 	# Save the original terminal settings so they can be restored later.
 	$heap->{stdin_tio} = POSIX::Termios->new();
 	$heap->{stdin_tio}->getattr(0);
@@ -140,6 +137,25 @@ sub handle_start {
 	$heap->{stdout_tio}->getattr(1);
 	$heap->{stderr_tio} = POSIX::Termios->new();
 	$heap->{stderr_tio}->getattr(2);
+
+	# Start the terminal reader/writer.
+
+	$heap->{stdio} = POE::Wheel::ReadWrite->new(
+		InputHandle  => \*STDIN,
+		OutputHandle => \*STDOUT,
+		InputEvent   => "got_terminal_stdin",
+		Filter       => POE::Filter::Stream->new(),
+	);
+
+	# Start the asynchronous child process.
+
+	$heap->{program} = POE::Wheel::Run_ttyrec->new(
+		Program     => $opt{command},
+		Conduit     => "pty",
+		Winsize     => $opt{window_size},
+		StdoutEvent => "got_child_stdout",
+		StdioFilter => POE::Filter::Stream->new(),
+	);
 
 	# Put the terminal into raw input mode.  Otherwise discrete
 	# keystrokes will not be read immediately.
@@ -172,36 +188,6 @@ sub handle_start {
 
 		$tio->setattr(1, TCSANOW);
 	}
-
-	if (0) {
-		my $tio = POSIX::Termios->new();
-		$tio->getattr(1);
-
-		my $lflag = $tio->getlflag;
-		$lflag &= ~ECHO;
-		$tio->setlflag($lflag);
-	}
-
-	# Start the terminal reader/writer.
-
-	$heap->{stdio} = POE::Wheel::ReadWrite->new(
-		InputHandle  => \*STDIN,
-		OutputHandle => \*STDOUT,
-		InputEvent   => "got_terminal_stdin",
-		Filter       => POE::Filter::Stream->new(),
-	);
-
-	# Start the asynchronous child process.
-
-	$heap->{program} = POE::Wheel::Run->new(
-		Program     => $opt{command},
-		Conduit     => "pty",
-		Winsize     => $opt{window_size},
-		StdoutEvent => "got_child_stdout",
-		StdioFilter => POE::Filter::Stream->new(),
-	);
-
-	#system "stty $$heap{stty}";
 
 	$start_time = scalar gettimeofday;
 }

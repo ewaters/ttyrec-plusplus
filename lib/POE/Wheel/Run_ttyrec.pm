@@ -1,9 +1,9 @@
-package POE::Wheel::Run;
+package POE::Wheel::Run_ttyrec;
 
 use strict;
 
 use vars qw($VERSION @ISA);
-$VERSION = '1.354'; # NOTE - Should be #.### (three decimal places)
+$VERSION = '1.351'; # NOTE - Should be #.### (three decimal places)
 
 use Carp qw(carp croak);
 use POSIX qw(
@@ -408,7 +408,7 @@ sub new {
 
       # Put the pty conduit (slave side) into "raw" or "cbreak" mode,
       # per APITUE 19.4 and 11.10.
-      $stdin_read->set_raw();
+      #$stdin_read->set_raw();
 
       if (TIOCSWINSZ_AVAILABLE) {
         if ($winsize) {
