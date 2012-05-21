@@ -1,0 +1,12 @@
+bin/parse_ansi_escape_sequences.pl
+bin/ttyrec++
+Build.PL
+lib/App/ttyrecpp.pm
+lib/ParseANSISequences.pm
+lib/POE/Wheel/Run_ttyrec.pm
+Makefile.PL
+MANIFEST			This list of files
+README
+README.md
+META.yml
+META.json

@@ -11,13 +11,13 @@ use Data::Dumper;
 use POSIX;
 use POE qw(Wheel::ReadWrite Wheel::Run_ttyrec Filter::Stream);
 use Getopt::Long;
-use FindBin;
 use utf8;
 
 ## Configuration
 
 my %opt = (
-	out_file    => "$FindBin::Bin/../logs/ttyrec.$$.json",
+	out_file    => undef,
+	out_dir     => './',
 	window_size => undef,
 	command     => $ENV{SHELL},
 	debug       => 0,
@@ -25,12 +25,17 @@ my %opt = (
 
 GetOptions(
 	'out=s'     => \$opt{out_file},
+	'dir=s'     => \$opt{out_dir},
 	'command=s' => \$opt{command},
 	'debug'     => \$opt{debug},
 );
 
 if (@ARGV) {
 	$opt{command} = \@ARGV;
+}
+if (! $opt{out_file}) {
+	$opt{out_dir} .= '/' unless $opt{out_dir} =~ m{/$};
+	$opt{out_file} = $opt{out_dir} . "ttyrec.$$.json",
 }
 if (! $opt{window_size}) {
 	my ($rows, $cols) = `/bin/stty size` =~ m{^(\d+) \s+ (\d+)}x;
