@@ -37,6 +37,10 @@
          "file" : "lib/App/ttyrecpp.pm",
          "version" : "0.01"
       },
+      "POE::Wheel::Run_ttyrec" : {
+         "file" : "lib/POE/Wheel/Run_ttyrec.pm",
+         "version" : "1.351"
+      },
       "ParseANSISequences" : {
          "file" : "lib/ParseANSISequences.pm",
          "version" : 0
